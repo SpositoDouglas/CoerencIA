@@ -1,0 +1,18 @@
+# Segredos — nunca versionar
+.env
+
+# Ambiente virtual Python (5+ GB com PyTorch/SBERT)
+.venv/
+
+# Bytecode Python
+__pycache__/
+*.py[cod]
+
+# Metadados do gerenciador de arquivos KDE
+.directory
+
+# Cache do modelo HuggingFace (baixado automaticamente)
+.cache/
+
+# Arquivo Streamlit legado (não é mais usado)
+.streamlit/
