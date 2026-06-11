@@ -111,6 +111,34 @@ RIGOR_THRESHOLDS = {
     "Alto": {"forte": 0.74, "moderada": 0.56, "critica": 0.58},
 }
 
+PAIR_CONTEXT: dict[str, dict[str, str]] = {
+    "Introdução ↔ Objetivos": {
+        "forte": "Os objetivos estão diretamente ancorados no contexto e na justificativa apresentada na introdução.",
+        "moderada": "Os objetivos atendem parcialmente ao cenário introduzido, mas alguns aspectos contextualizados não se refletem claramente nos objetivos declarados.",
+        "fraca": "Os objetivos parecem desconectados do contexto e da problemática levantada na introdução. Verifique se os objetivos respondem diretamente ao que foi apresentado.",
+    },
+    "Objetivos ↔ Metodologia": {
+        "forte": "A metodologia cobre os procedimentos necessários para atingir todos os objetivos declarados.",
+        "moderada": "A metodologia responde a parte dos objetivos, mas alguns procedimentos podem ser vagos ou ausentes para objetivos específicos.",
+        "fraca": "A metodologia não reflete claramente os objetivos. Os procedimentos adotados parecem insuficientes ou desalinhados com o que foi proposto.",
+    },
+    "Objetivos ↔ Resultados": {
+        "forte": "Os resultados demonstram cumprimento dos objetivos, com boa correspondência entre o que foi proposto e o que foi alcançado.",
+        "moderada": "Os resultados respondem parcialmente aos objetivos. Alguns objetivos específicos não possuem evidências claras nos resultados apresentados.",
+        "fraca": "Os resultados apresentam baixa correspondência com os objetivos. O trabalho pode não ter respondido adequadamente ao que se propôs.",
+    },
+    "Problema ↔ Conclusão": {
+        "forte": "A conclusão responde com clareza ao problema de pesquisa formulado, demonstrando fechamento lógico do trabalho.",
+        "moderada": "A conclusão aborda o problema de pesquisa de forma parcial. Aspectos centrais da questão podem não ter resposta explícita nas considerações finais.",
+        "fraca": "A conclusão não responde adequadamente ao problema de pesquisa. O fechamento do trabalho parece desconectado da questão central formulada.",
+    },
+    "Resultados ↔ Conclusão": {
+        "forte": "As conclusões são sustentadas pelos resultados apresentados, com boa coerência entre evidências e inferências finais.",
+        "moderada": "As conclusões refletem parcialmente os resultados. Algumas inferências podem extrapolar ou subutilizar as evidências apresentadas.",
+        "fraca": "As conclusões têm baixa correspondência com os resultados. As inferências finais não estão suficientemente sustentadas pelas evidências do trabalho.",
+    },
+}
+
 STOPWORDS_PT = {
     "a",
     "o",
@@ -161,6 +189,14 @@ STOPWORDS_PT = {
 }
 
 GEMINI_BACKOFF_DELAYS = (5, 15, 30)
+
+# Regex patterns for cleaning Docling Markdown output
+_RE_DOCLING_TABLE_SEP = re.compile(r'^[\|\-\+\=\:\s]+$')
+_RE_DOCLING_IMAGE = re.compile(r'^\s*!\[')
+_RE_DOCLING_FILE_LINK = re.compile(
+    r'^\s*\[.*?\]\([^)]*\.(pdf|png|jpg|jpeg|gif|svg|tiff|webp|bmp)[^)]*\)\s*$',
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -275,6 +311,30 @@ def extract_document_text(filename: str, file_bytes: bytes) -> str:
     raise ValueError("Formato não suportado. Envie um arquivo PDF ou DOCX.")
 
 
+def _clean_docling_markdown(text: str) -> str:
+    """Remove non-textual Markdown artifacts produced by Docling before segmentation.
+
+    Removes: table separator rows (|---|---), image syntax, standalone binary-file
+    links, and lines where less than 15 % of characters are alphanumeric.
+    """
+    output: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            output.append("")
+            continue
+        if _RE_DOCLING_TABLE_SEP.match(stripped):
+            continue
+        if _RE_DOCLING_IMAGE.match(stripped):
+            continue
+        if _RE_DOCLING_FILE_LINK.match(stripped):
+            continue
+        if len(stripped) > 8 and sum(c.isalnum() for c in stripped) / len(stripped) < 0.15:
+            continue
+        output.append(line)
+    return _normalize_spaces("\n".join(output))
+
+
 def _resolve_model_name(config: AnalysisConfig) -> str:
     if config.modelo_semantico == "Modelo Customizado" and config.modelo_customizado:
         return config.modelo_customizado
@@ -327,6 +387,17 @@ def _igc_classification(igc: float) -> str:
     if igc <= 0.70:
         return "Coerência moderada"
     return "Boa coerência estrutural"
+
+
+def _generate_pair_explanation(pair_label: str, score: float, rigor: str) -> str:
+    thresholds = RIGOR_THRESHOLDS.get(rigor, RIGOR_THRESHOLDS["Médio"])
+    if score >= thresholds["forte"]:
+        band = "forte"
+    elif score >= thresholds["moderada"]:
+        band = "moderada"
+    else:
+        band = "fraca"
+    return PAIR_CONTEXT.get(pair_label, {}).get(band, "")
 
 
 def _critical_excerpt(
@@ -396,6 +467,7 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
                 "interpretação": interpretation,
                 "faixa": color_label,
                 "classe_css": css_class,
+                "explicacao": _generate_pair_explanation(pair_label, score, config.nivel_rigor),
             }
         )
 
@@ -714,6 +786,22 @@ def generate_gemini_report(payload: dict[str, Any], config: AnalysisConfig, api_
         "relatorio_markdown": "\n".join(final_report),
         "diagnosticos_por_par": diagnostics,
     }
+
+
+def analyze_document_with_docling(file_name: str, file_bytes: bytes, config: AnalysisConfig) -> dict[str, Any]:
+    """Extract text via Docling, segment sections, and run coherence analysis."""
+    from document_converter import convert_document_to_markdown
+
+    markdown = convert_document_to_markdown(file_name, file_bytes)
+    if len(markdown) < 200:
+        raise ValueError("Não foi possível extrair texto suficiente do arquivo para análise estrutural.")
+    cleaned = _clean_docling_markdown(markdown)
+    sections = segment_sections(cleaned)
+    result = analyze_sections(sections, config)
+    result["arquivo"] = file_name
+    result["markdown_extraido"] = markdown
+    result["secoes_detectadas"] = {k: v for k, v in sections.items() if v}
+    return result
 
 
 def report_to_markdown(payload: dict[str, Any]) -> str:

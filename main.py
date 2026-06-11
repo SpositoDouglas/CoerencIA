@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from coerencia_engine import AnalysisConfig, analyze_sections
+from coerencia_engine import AnalysisConfig, analyze_document_with_docling, analyze_sections
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
@@ -119,6 +119,36 @@ def _call_gemini_report(
         config=types.GenerateContentConfig(system_instruction=system),
     )
     return (getattr(response, "text", "") or "").strip()
+
+
+@app.post("/api/analyze/document")
+async def analyze_document_upload(
+    file: UploadFile = File(...),
+    rigor: str = Form("Médio"),
+    gemini_api_key: Optional[str] = Form(None),
+    use_gemini: bool = Form(False),
+):
+    filename = file.filename or "documento"
+    file_bytes = await file.read()
+
+    config = AnalysisConfig(
+        modo_analise="Análise detalhada",
+        modelo_semantico="Sentence-BERT padrão",
+        nivel_rigor=rigor,
+    )
+    try:
+        result = analyze_document_with_docling(filename, file_bytes, config)
+        if use_gemini:
+            api_key = gemini_api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+            if api_key:
+                result["gemini_report"] = _call_gemini_report(
+                    result["secoes_extraidas"], result, rigor, api_key
+                )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
