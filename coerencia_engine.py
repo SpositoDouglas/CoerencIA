@@ -232,12 +232,46 @@ def _section_from_heading(line: str) -> str | None:
         return None
 
     mapping = {
-        "introducao": ["introducao", "contextualizacao"],
-        "problema": ["problema", "problema de pesquisa", "questao de pesquisa"],
-        "objetivos": ["objetivo", "objetivos", "objetivo geral", "objetivos especificos"],
-        "metodologia": ["metodologia", "metodo", "procedimentos metodologicos", "materiais e metodos"],
-        "resultados": ["resultado", "resultados", "analise dos resultados", "discussao"],
-        "conclusao": ["conclusao", "consideracoes finais", "conclusoes"],
+        "introducao": [
+            "introducao", "contextualizacao", "contexto", "apresentacao",
+            "introducao ao tema", "contextualizacao do tema", "contexto e problema",
+            "contexto geral", "apresentacao do tema",
+        ],
+        "problema": [
+            "problema", "problema de pesquisa", "questao de pesquisa",
+            "questao norteadora", "problematica", "delimitacao do problema",
+            "formulacao do problema", "identificacao do problema",
+            "questao central", "hipotese", "lacuna", "justificativa",
+        ],
+        "objetivos": [
+            "objetivo", "objetivos", "objetivo geral", "objetivos especificos",
+            "objetivos do trabalho", "objetivo da pesquisa", "objetivos da pesquisa",
+            "objetivos gerais e especificos", "metas da pesquisa", "finalidade",
+            "proposito", "objetivos gerais",
+        ],
+        "metodologia": [
+            "metodologia", "metodo", "procedimentos metodologicos", "materiais e metodos",
+            "materiais e metodologia", "metodos e tecnicas", "abordagem metodologica",
+            "procedimentos", "metodologia de pesquisa", "delineamento metodologico",
+            "tipo de pesquisa", "metodologia e tecnicas", "caminho metodologico",
+            "percurso metodologico", "estrategia metodologica", "design da pesquisa",
+            "tecnicas de pesquisa", "abordagem", "metodos", "metodologia e metodos",
+        ],
+        "resultados": [
+            "resultado", "resultados", "analise dos resultados", "discussao",
+            "analise e discussao", "discussao dos resultados", "apresentacao dos resultados",
+            "resultados e discussao", "analise de dados", "achados",
+            "analise e interpretacao", "dados e resultados", "analise dos dados",
+            "resultados obtidos", "resultados e analise", "resultados e discussao",
+        ],
+        "conclusao": [
+            "conclusao", "consideracoes finais", "conclusoes",
+            "conclusao e consideracoes finais", "reflexoes finais",
+            "consideracoes", "encerramento", "sintese",
+            "contribuicoes", "conclusoes e recomendacoes",
+            "conclusoes finais", "fechamento", "ultimas consideracoes",
+            "consideracoes e conclusoes",
+        ],
     }
 
     for key, aliases in mapping.items():
@@ -445,6 +479,7 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
     embedding_by_section = {key: embeddings[idx] for idx, key in enumerate(SECTIONS_ORDER)}
 
     matrix_rows: list[dict[str, Any]] = []
+    skipped_pairs: list[dict[str, str]] = []
     critical_rows: list[dict[str, Any]] = []
 
     rigor_cfg = RIGOR_THRESHOLDS.get(config.nivel_rigor, RIGOR_THRESHOLDS["Médio"])
@@ -454,11 +489,15 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
         right_text = sections.get(right_key, "")
 
         if not left_text or not right_text:
-            score = 0.0
-            interpretation, color_label, css_class = "Dados insuficientes", "Vermelho", "coerencia-fraca"
-        else:
-            score = _cosine_sim(embedding_by_section[left_key], embedding_by_section[right_key])
-            interpretation, color_label, css_class = _semantic_band(score, config.nivel_rigor)
+            ausentes = [SECTION_LABELS[k] for k, t in ((left_key, left_text), (right_key, right_text)) if not t]
+            skipped_pairs.append({
+                "par": pair_label,
+                "motivo": f"Seção ausente: {', '.join(ausentes)}",
+            })
+            continue
+
+        score = _cosine_sim(embedding_by_section[left_key], embedding_by_section[right_key])
+        interpretation, color_label, css_class = _semantic_band(score, config.nivel_rigor)
 
         matrix_rows.append(
             {
@@ -471,9 +510,9 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
             }
         )
 
-        if score < rigor_cfg["critica"] and left_text and right_text:
+        if score < rigor_cfg["critica"]:
             excerpt_a, excerpt_b, excerpt_score = _critical_excerpt(model, left_text, right_text)
-            suggestion = _build_suggestion(pair_label, excerpt_a, excerpt_b, sections.get(left_key, ""))
+            suggestion = _build_suggestion(pair_label, excerpt_a, excerpt_b, left_text)
             critical_rows.append(
                 {
                     "par": pair_label,
@@ -496,12 +535,16 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
             "igc": round(igc, 4),
             "similaridade_media": round(similarity_mean, 4),
             "classificacao": classification,
+            "pares_avaliados": len(matrix_rows),
+            "pares_ignorados": len(skipped_pairs),
+            "pares_totais": len(MANDATORY_PAIRS),
             "modo_analise": config.modo_analise,
             "modelo_semantico": config.modelo_semantico,
             "nivel_rigor": config.nivel_rigor,
             "modelo_embedding": model_name,
         },
         "matriz_similaridade": matrix_rows,
+        "pares_nao_avaliados": skipped_pairs,
         "trechos_criticos": critical_rows,
         "secoes_extraidas": sections,
         "avisos": warnings,
@@ -802,6 +845,127 @@ def analyze_document_with_docling(file_name: str, file_bytes: bytes, config: Ana
     result["markdown_extraido"] = markdown
     result["secoes_detectadas"] = {k: v for k, v in sections.items() if v}
     return result
+
+
+def detect_document_segments(text: str) -> list[dict[str, Any]]:
+    """Split Markdown text into heading+content pairs for user review."""
+    segments: list[dict[str, Any]] = []
+    current_heading = ""
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        content = _normalize_spaces(" ".join(current_lines))
+        if current_heading or content:
+            auto = _section_from_heading(current_heading) if current_heading else None
+            segments.append({
+                "heading": current_heading,
+                "content": content,
+                "sugerido": auto,
+            })
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("#"):
+            _flush()
+            current_heading = re.sub(r"^#+\s*", "", line).strip()
+            current_lines = []
+        elif line:
+            current_lines.append(line)
+
+    _flush()
+    return segments
+
+
+def merge_confirmed_segments(
+    segments: list[dict], user_mapping: dict[str, str]
+) -> dict[str, str]:
+    """Merge document segments into section dict using user-confirmed mapping."""
+    buckets: dict[str, list[str]] = {key: [] for key in SECTIONS_ORDER}
+    for i, seg in enumerate(segments):
+        role = user_mapping.get(str(i)) or seg.get("sugerido")
+        if not role or role not in SECTIONS_ORDER:
+            continue
+        text = seg.get("content", "").strip()
+        if text:
+            buckets[role].append(text)
+    return {
+        key: _normalize_spaces("\n".join(texts))
+        for key, texts in buckets.items()
+    }
+
+
+def propose_section_mapping_with_ai(
+    segments: list[dict], api_key: str | None = None
+) -> list[dict]:
+    """Use Gemini to propose section classification for each detected segment."""
+    resolved_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not resolved_key or not segments:
+        return segments
+
+    headings_block = "\n".join(
+        f"{i}. [{seg['heading'] or '(sem título)'}] {seg['content'][:180].strip()}"
+        for i, seg in enumerate(segments)
+    )
+    prompt = (
+        "Você está analisando a estrutura de um TCC. Classifique cada trecho numerado "
+        "em exatamente uma das categorias: introducao, problema, objetivos, metodologia, "
+        "resultados, conclusao, ignorar.\n\n"
+        f"Trechos:\n{headings_block}\n\n"
+        "Responda apenas com JSON:\n"
+        '{"mapeamento": {"0": "categoria", "1": "categoria"}}'
+    )
+
+    try:
+        client = google_genai.Client(api_key=resolved_key)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        raw = getattr(response, "text", "") or ""
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            import json as _json
+            data = _json.loads(json_match.group())
+            mapping = data.get("mapeamento", {})
+            for i, seg in enumerate(segments):
+                candidate = mapping.get(str(i))
+                if candidate and candidate in (*SECTIONS_ORDER, "ignorar"):
+                    seg["sugerido"] = candidate
+    except Exception:
+        pass
+
+    return segments
+
+
+def analyze_intro_checklist(
+    intro_text: str, api_key: str | None = None
+) -> list[dict]:
+    """Return a checklist of academic elements found in the Introduction text."""
+    resolved_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not resolved_key or not intro_text.strip():
+        return []
+
+    prompt = (
+        "Analise o trecho de Introdução de um TCC abaixo. Identifique se cada elemento "
+        "acadêmico está presente, parcialmente presente ou ausente.\n"
+        "Elementos: Contextualização do tema, Problema de pesquisa ou lacuna, "
+        "Justificativa/relevância, Objetivo geral, Objetivos específicos, "
+        "Metodologia mencionada, Estrutura do trabalho.\n\n"
+        "Responda apenas com JSON:\n"
+        '{"elementos": [{"nome": "...", "status": "presente|parcial|ausente", "observacao": "..."}]}\n\n'
+        f"Introdução:\n{intro_text[:3000]}"
+    )
+
+    try:
+        client = google_genai.Client(api_key=resolved_key)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        raw = getattr(response, "text", "") or ""
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            import json as _json
+            data = _json.loads(json_match.group())
+            return data.get("elementos", [])
+    except Exception:
+        pass
+
+    return []
 
 
 def report_to_markdown(payload: dict[str, Any]) -> str:
