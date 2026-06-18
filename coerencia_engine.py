@@ -272,6 +272,15 @@ def _section_from_heading(line: str) -> str | None:
             "conclusoes finais", "fechamento", "ultimas consideracoes",
             "consideracoes e conclusoes",
         ],
+        "ignorar": [
+            "resumo", "abstract", "resumen", "sumario", "sumario executivo",
+            "summary", "palavras chave", "keywords", "palavras-chave",
+            "referencias", "referencias bibliograficas", "bibliografia",
+            "lista de referencias", "agradecimentos", "dedicatoria",
+            "anexo", "anexos", "apendice", "apendices",
+            "lista de figuras", "lista de tabelas", "lista de abreviaturas",
+            "lista de siglas", "epigrafe", "folha de aprovacao",
+        ],
     }
 
     for key, aliases in mapping.items():
@@ -302,22 +311,30 @@ def _fallback_extract_section(full_text: str, section_key: str) -> str:
 def segment_sections(full_text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {key: [] for key in SECTIONS_ORDER}
     active_section: str | None = None
+    ignoring = False
+    filtered_lines: list[str] = []
 
     for raw_line in full_text.splitlines():
         line = raw_line.strip()
         detected = _section_from_heading(line)
         if detected:
-            active_section = detected
+            ignoring = detected == "ignorar"
+            active_section = detected if detected in SECTIONS_ORDER else None
+            continue
+
+        if ignoring:
             continue
 
         if active_section and line:
             sections[active_section].append(line)
+        filtered_lines.append(line)
 
     finalized = {key: _normalize_spaces("\n".join(value)) for key, value in sections.items()}
+    filtered_text = "\n".join(filtered_lines)
 
     for key in SECTIONS_ORDER:
         if len(finalized[key]) < 80:
-            fallback = _fallback_extract_section(full_text, key)
+            fallback = _fallback_extract_section(filtered_text, key)
             if len(fallback) > len(finalized[key]):
                 finalized[key] = _normalize_spaces(fallback)
 
@@ -910,6 +927,10 @@ def propose_section_mapping_with_ai(
         "Você está analisando a estrutura de um TCC. Classifique cada trecho numerado "
         "em exatamente uma das categorias: introducao, problema, objetivos, metodologia, "
         "resultados, conclusao, ignorar.\n\n"
+        "Classifique como 'ignorar' trechos que sejam Resumo, Abstract, Sumário, "
+        "Palavras-chave/Keywords, Referências (ou Referências Bibliográficas/Bibliografia), "
+        "Agradecimentos, Dedicatória, Epígrafe, Anexos ou Apêndices — esses trechos não "
+        "fazem parte do corpo estrutural do trabalho e não devem ser usados na análise.\n\n"
         f"Trechos:\n{headings_block}\n\n"
         "Responda apenas com JSON:\n"
         '{"mapeamento": {"0": "categoria", "1": "categoria"}}'
