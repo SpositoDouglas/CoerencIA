@@ -1,17 +1,40 @@
 # CoerencIA
 
-**Avaliação Automatizada de TCCs com NLP — Análise de Coerência entre Seções**
+**Avaliação Automatizada de Trabalhos Acadêmicos com NLP — Análise de Coerência entre Seções**
 
-O sistema detecta automaticamente desalinhamentos semânticos entre seções de TCCs (Introdução, Problema, Objetivos, Metodologia, Resultados e Conclusão), calculando um **Índice Global de Coerência (IGC)** via embeddings SBERT e gerando sugestões de melhoria.
+O sistema detecta automaticamente desalinhamentos semânticos entre seções de TCCs e artigos científicos (Introdução, Problema, Objetivos, Metodologia, Resultados e Conclusão), calculando um **Índice Global de Coerência (IGC)** via embeddings SBERT e gerando sugestões de melhoria.
 
 ---
 
 ## Como funciona
 
-1. Você cola o texto de cada seção do TCC no wizard passo a passo
-2. O sistema gera embeddings com **Sentence-BERT** e calcula a similaridade semântica entre os pares estratégicos (ex: Objetivos ↔ Resultados)
-3. O resultado mostra o IGC, uma matriz de similaridade com classificação (Forte / Moderado / Fraco) e alertas para os trechos mais desalinhados
-4. Opcionalmente, você pode ativar a **análise qualitativa com Gemini**: o sistema monta um único prompt com todos os textos e envia à API do Google para gerar um diagnóstico em linguagem natural
+O CoerencIA oferece dois modos de entrada, e a análise qualitativa por IA é opcional em ambos:
+
+**Preenchimento manual** — você cola o texto de cada seção em um wizard passo a passo.
+
+**Upload de documento (PDF/DOCX)** — o sistema executa um fluxo automático de compreensão do documento antes da análise:
+
+1. Extrai o texto do arquivo
+2. Separa e identifica os **metadados da primeira página** (título e autores)
+3. Detecta títulos, subtítulos e blocos de texto, preservando os títulos originais
+4. Identifica a Introdução e a **analisa prioritariamente**, extraindo possíveis trechos de problema, objetivos, lacuna, justificativa, proposta e demais elementos
+5. Usa esses elementos como contexto para classificar as demais seções (incluindo o **Referencial Teórico**)
+6. Apresenta todo o mapeamento — metadados, elementos da Introdução e seções — para **revisão e correção do usuário**
+7. Somente após a confirmação, calcula as similaridades e o IGC
+
+Em seguida, o motor gera embeddings com **Sentence-BERT**, calcula a similaridade semântica entre os pares estratégicos (ex.: Objetivos ↔ Resultados) e apresenta o IGC, a matriz de similaridade com classificação (Forte / Moderado / Fraco) e alertas para os trechos mais desalinhados.
+
+Opcionalmente, você pode ativar a **análise qualitativa com Gemini**, que gera um diagnóstico interpretativo em linguagem natural. O fluxo nunca depende da IA: sem chave configurada ou em caso de falha da API, a extração de metadados, a análise da Introdução e a classificação das seções continuam funcionando por **regras locais**, e o usuário pode corrigir tudo manualmente.
+
+---
+
+## Metadados, elementos da Introdução e Referencial Teórico
+
+- **Metadados (título e autores):** extraídos da primeira página e exibidos no topo das telas de revisão e de resultados. Não são tratados como seções acadêmicas, não geram embeddings e não influenciam o IGC. A correção manual do usuário tem prioridade sobre a extração automática.
+- **Elementos da Introdução:** quando o problema ou os objetivos não existem como seções próprias, mas são identificados e confirmados dentro da Introdução, os trechos correspondentes passam a ser usados nos pares estratégicos aplicáveis, sem serem contabilizados em duplicidade. Se nem a seção própria nem um trecho confiável forem encontrados, o elemento é considerado ausente e os pares dependentes aparecem como **“não avaliados por informação insuficiente”** (nunca recebem similaridade zero).
+- **Referencial Teórico:** reconhecido a partir de títulos equivalentes (Fundamentação Teórica, Revisão de Literatura, Estado da Arte, Trabalhos Relacionados, Background, Literature Review, entre outros). É exibido e usado como contexto da análise e do relatório, mas **não altera a fórmula do IGC nem adiciona novos pares estratégicos**. Subseções teóricas têm seus títulos originais preservados e podem ser classificadas individualmente ou agrupadas.
+
+O relatório final indica quando um problema ou objetivo veio de uma seção própria e quando foi identificado dentro da Introdução por análise automática.
 
 ---
 
@@ -94,14 +117,15 @@ http://localhost:8000
 ```
 CoerencIA/
 ├── main.py                  # Servidor FastAPI (endpoints da API)
-├── coerencia_engine.py      # Motor de análise (SBERT, IGC, métricas)
+├── coerencia_engine.py      # Motor de análise (SBERT, IGC, metadados, segmentação)
+├── document_converter.py    # Conversão de PDF/DOCX para Markdown (Docling)
 ├── requirements.txt         # Dependências Python
 ├── .env                     # Chave da API Gemini (não versionar)
 │
 └── static/
     ├── index.html           # Página principal
     ├── style.css            # Estilo dark theme
-    └── app.js               # Lógica do wizard (JavaScript)
+    └── app.js               # Lógica da interface (JavaScript)
 ```
 
 ---
@@ -111,31 +135,14 @@ CoerencIA/
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | `GET`  | `/` | Serve a interface web |
-| `POST` | `/api/analyze` | Análise SBERT (somente local, sem IA externa) |
-| `POST` | `/api/analyze/full` | Análise SBERT + diagnóstico Gemini |
+| `GET`  | `/api/check-ai` | Informa se há chave Gemini configurada no servidor |
+| `POST` | `/api/analyze` | Análise SBERT do preenchimento manual (somente local) |
+| `POST` | `/api/analyze/full` | Análise SBERT + diagnóstico Gemini (manual) |
+| `POST` | `/api/intro-analysis` | Checklist de elementos da Introdução (manual, com IA) |
+| `POST` | `/api/extract-segments` | Upload: extrai texto, metadados, segmentos e elementos da Introdução |
+| `POST` | `/api/analyze-mapped` | Upload: análise a partir do mapeamento confirmado pelo usuário |
 
-**Corpo da requisição (`/api/analyze`):**
-```json
-{
-  "sections": {
-    "introducao": "Texto da introdução...",
-    "problema": "Texto do problema...",
-    "objetivos": "Texto dos objetivos...",
-    "metodologia": "Texto da metodologia...",
-    "resultados": "Texto dos resultados...",
-    "conclusao": "Texto da conclusão..."
-  },
-  "rigor": "Médio"
-}
-```
-
-Para `/api/analyze/full`, adicione também:
-```json
-{
-  "gemini_api_key": "AIzaSy...",
-  "use_gemini": true
-}
-```
+> **Segurança:** a chave da API Gemini é lida exclusivamente do arquivo `.env` pelo backend. Ela **não** é digitada na interface nem enviada no corpo das requisições.
 
 ---
 
@@ -167,5 +174,6 @@ Para `/api/analyze/full`, adicione também:
 
 - **[FastAPI](https://fastapi.tiangolo.com/)** — servidor web e API REST
 - **[Sentence-Transformers](https://www.sbert.net/)** — modelo `paraphrase-multilingual-MiniLM-L12-v2`
+- **[Docling](https://github.com/DS4SD/docling)** — conversão de PDF/DOCX para Markdown no upload (OCR desativado)
 - **[Google Gemini API](https://ai.google.dev/)** — análise qualitativa em linguagem natural (opcional)
 - **JavaScript (vanilla)** — interface web sem framework

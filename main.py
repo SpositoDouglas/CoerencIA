@@ -14,12 +14,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from coerencia_engine import (
+    SECTION_LABELS,
     AnalysisConfig,
     analyze_document_with_docling,
     analyze_intro_checklist,
+    analyze_intro_elements,
     analyze_sections,
+    assemble_sections_from_mapping,
     detect_document_segments,
-    merge_confirmed_segments,
+    extract_document_metadata,
     propose_section_mapping_with_ai,
 )
 
@@ -48,6 +51,8 @@ class AnalyzeMappedRequest(BaseModel):
     rigor: str = "Médio"
     use_gemini: bool = False
     additional_info: str = ""
+    metadados: dict[str, Any] = {}
+    intro_elementos: list[dict[str, Any]] = []
 
 
 # ── Static files ───────────────────────────────────────────────────────────────
@@ -134,8 +139,16 @@ async def extract_segments(
     file: UploadFile = File(...),
     propose_mapping: bool = Form(False),
 ):
+    """Extract text and run the document-understanding pipeline for user review.
+
+    Order: convert → clean → detect segments → (optional) propose mapping → extract
+    first-page metadata → analyze the Introduction and extract its elements. The AI
+    steps are optional; metadata and segments survive even if the AI step fails.
+    """
     filename = file.filename or "documento"
     file_bytes = await file.read()
+    api_key = _get_api_key()
+    use_ai = bool(propose_mapping and api_key)
 
     try:
         from document_converter import convert_document_to_markdown
@@ -145,10 +158,30 @@ async def extract_segments(
         cleaned = _clean_docling_markdown(markdown)
         segments = detect_document_segments(cleaned)
 
-        if propose_mapping and _get_api_key():
-            segments = propose_section_mapping_with_ai(segments, _get_api_key())
+        if use_ai:
+            segments = propose_section_mapping_with_ai(segments, api_key)
 
-        return {"segments": segments, "markdown": markdown}
+        # Metadados da primeira página (não são seções acadêmicas).
+        metadados = extract_document_metadata(cleaned, api_key if use_ai else None)
+
+        # Análise prioritária da Introdução: identifica problema, objetivos, etc.
+        intro_text = "\n\n".join(
+            seg.get("content", "")
+            for seg in segments
+            if seg.get("sugerido") == "introducao" and seg.get("content")
+        )
+        intro_elementos = (
+            analyze_intro_elements(intro_text, api_key if use_ai else None)
+            if intro_text.strip()
+            else []
+        )
+
+        return {
+            "segments": segments,
+            "metadados": metadados,
+            "intro_elementos": intro_elementos,
+            "markdown": markdown,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -165,8 +198,18 @@ def analyze_mapped(req: AnalyzeMappedRequest):
         nivel_rigor=req.rigor,
     )
     try:
-        sections = merge_confirmed_segments(req.segments, req.user_mapping)
-        result = analyze_sections(sections, config)
+        assembled = assemble_sections_from_mapping(
+            req.segments, req.user_mapping, req.intro_elementos
+        )
+        sections = assembled["sections"]
+        result = analyze_sections(
+            sections,
+            config,
+            referencial=assembled["referencial"],
+            origem_secoes=assembled["origem_secoes"],
+        )
+        # Metadados corrigidos pelo usuário têm prioridade sobre a extração automática.
+        result["metadados"] = req.metadados or {}
 
         if req.use_gemini:
             api_key = _get_api_key()
@@ -237,6 +280,23 @@ def _call_gemini_report(
         for p in analysis.get("pares_nao_avaliados", [])
     )
 
+    origem = analysis.get("origem_secoes", {}) or {}
+    origem_labels = {
+        "secao_propria": "seção própria do documento",
+        "introducao": "identificado dentro da Introdução (automaticamente, confirmado pelo usuário)",
+        "ausente": "ausente (não localizado em seção própria nem na Introdução)",
+    }
+    origem_lines = "\n".join(
+        f"- {SECTION_LABELS.get(key, key)}: {origem_labels.get(value, value)}"
+        for key, value in origem.items()
+    )
+
+    referencial = (analysis.get("referencial") or "").strip()
+    referencial_block = (
+        f"\n\nReferencial Teórico (apenas contexto — não entra nos pares nem no IGC):\n{referencial[:1500]}"
+        if referencial else ""
+    )
+
     section_order = [
         ("introducao", "Introdução"),
         ("problema", "Problema de Pesquisa"),
@@ -254,24 +314,31 @@ def _call_gemini_report(
     extra_block = f"\n\nInformações adicionais fornecidas pelo autor:\n{additional_info.strip()}" if additional_info.strip() else ""
 
     prompt = (
-        f"Você é um professor universitário avaliando a coerência estrutural de um TCC.\n\n"
+        f"Você é um professor universitário avaliando a coerência estrutural de um trabalho acadêmico "
+        f"(TCC ou artigo científico).\n\n"
         f"IGC: {igc:.2f} — {classification} ({evaluated} de {total} pares avaliados)\n"
         f"Nível de rigor: {rigor}\n\n"
         f"Pares avaliados:\n{pairs_lines}\n"
         + (f"\nPares não avaliados (seção ausente):\n{skipped_lines}\n" if skipped_lines else "")
-        + f"\nTextos das seções:\n{sections_block}{extra_block}\n\n"
+        + (f"\nOrigem dos elementos centrais:\n{origem_lines}\n" if origem_lines else "")
+        + f"\nTextos das seções:\n{sections_block}{referencial_block}{extra_block}\n\n"
         f"Gere um diagnóstico em Markdown com:\n"
         f"1. Avaliação geral da coerência\n"
         f"2. Pares com maior e menor alinhamento, explicando o porquê\n"
         f"3. Sugestões acionáveis de melhoria\n"
         f"4. Se houver pares não avaliados, mencione o impacto da ausência dessas seções\n"
+        f"5. Quando o problema ou os objetivos tiverem sido identificados dentro da Introdução "
+        f"(e não em seção própria), deixe isso explícito no diagnóstico\n"
+        f"Use o Referencial Teórico apenas como contexto; ele não compõe o IGC.\n"
         f"Seja direto e prático."
     )
 
     system = (
-        "Você é um professor universitário experiente em bancas de TCC. "
+        "Você é um professor universitário experiente em bancas de TCC e revisão de artigos. "
         "Analise a coerência estrutural e dê feedback direto e acionável em português do Brasil. "
-        "Diferencie claramente baixa coerência de informação insuficiente."
+        "Diferencie claramente baixa coerência de informação insuficiente. "
+        "Quando um elemento (problema/objetivos) foi extraído da Introdução por análise automática, "
+        "trate-o como identificação automática e indique isso no texto."
     )
 
     client = genai.Client(api_key=api_key)

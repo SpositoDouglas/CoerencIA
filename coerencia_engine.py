@@ -79,6 +79,7 @@ MODE_PROMPT_BLOCKS = {
     ),
 }
 
+# Seções centrais — participam dos embeddings, dos pares estratégicos e do IGC.
 SECTIONS_ORDER = [
     "introducao",
     "problema",
@@ -88,6 +89,10 @@ SECTIONS_ORDER = [
     "conclusao",
 ]
 
+# Seções extras — reconhecidas, exibidas e usadas como contexto da análise/relatório,
+# mas que NÃO entram nos pares estratégicos nem alteram a fórmula do IGC.
+EXTRA_SECTIONS = ["referencial"]
+
 SECTION_LABELS = {
     "introducao": "Introdução",
     "problema": "Problema",
@@ -95,7 +100,11 @@ SECTION_LABELS = {
     "metodologia": "Metodologia",
     "resultados": "Resultados",
     "conclusao": "Conclusão",
+    "referencial": "Referencial Teórico",
 }
+
+# Todas as categorias acadêmicas válidas para mapeamento/seleção do usuário.
+MAPPABLE_SECTIONS = [*SECTIONS_ORDER, *EXTRA_SECTIONS]
 
 MANDATORY_PAIRS = [
     ("introducao", "objetivos", "Introdução ↔ Objetivos"),
@@ -248,6 +257,14 @@ def _section_from_heading(line: str) -> str | None:
             "objetivos do trabalho", "objetivo da pesquisa", "objetivos da pesquisa",
             "objetivos gerais e especificos", "metas da pesquisa", "finalidade",
             "proposito", "objetivos gerais",
+        ],
+        "referencial": [
+            "referencial teorico", "referencial conceitual", "fundamentacao teorica",
+            "revisao de literatura", "revisao da literatura", "revisao bibliografica",
+            "base teorica", "embasamento teorico", "marco teorico", "estado da arte",
+            "trabalhos relacionados", "trabalhos correlatos", "background",
+            "theoretical framework", "literature review", "related work",
+            "fundamentacao", "referencial",
         ],
         "metodologia": [
             "metodologia", "metodo", "procedimentos metodologicos", "materiais e metodos",
@@ -482,9 +499,17 @@ def _build_suggestion(pair_label: str, excerpt_a: str, excerpt_b: str, section_a
     )
 
 
-def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[str, Any]:
+def analyze_sections(
+    sections: dict[str, str],
+    config: AnalysisConfig,
+    *,
+    referencial: str = "",
+    origem_secoes: dict[str, str] | None = None,
+) -> dict[str, Any]:
     model_name = _resolve_model_name(config)
     model = _load_model(model_name)
+
+    origem_secoes = origem_secoes or {}
 
     warnings: list[str] = []
     for section_key in SECTIONS_ORDER:
@@ -564,6 +589,8 @@ def analyze_sections(sections: dict[str, str], config: AnalysisConfig) -> dict[s
         "pares_nao_avaliados": skipped_pairs,
         "trechos_criticos": critical_rows,
         "secoes_extraidas": sections,
+        "referencial": referencial,
+        "origem_secoes": origem_secoes,
         "avisos": warnings,
     }
 
@@ -987,6 +1014,390 @@ def analyze_intro_checklist(
         pass
 
     return []
+
+
+# ── Metadados do documento (título e autores) ───────────────────────────────────
+
+_INSTITUTION_HINTS = (
+    "universidade", "faculdade", "instituto", "centro universitario", "fundacao",
+    "escola", "departamento", "curso", "graduacao", "bacharelado", "licenciatura",
+    "tecnologo", "campus", "ministerio", "secretaria", "colegiado",
+    "programa de pos", "centro de", "pontificia",
+)
+_ROLE_HINTS = (
+    "orientador", "orientadora", "coorientador", "coorientadora", "professor",
+    "professora", "prof.", "prof ", "dr.", "dra.", "msc", "m.sc", "ph.d", "phd",
+    "banca", "examinador", "examinadora", "mestre", "doutor", "doutora",
+)
+_META_NOISE = (
+    "resumo", "abstract", "resumen", "palavras-chave", "palavras chave",
+    "keywords", "sumario", "trabalho de conclusao", "monografia", "dissertacao",
+    "tese de", "como requisito", "requisito parcial", "obtencao do",
+    "titulo de", "grau de", "submetido", "apresentad",
+)
+
+
+def _document_preamble(text: str) -> list[str]:
+    """Return the non-empty lines that appear before the Introduction heading."""
+    preamble: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"^#+\s*", "", raw_line).strip()
+        if not line:
+            continue
+        if len(line) < 60 and _section_from_heading(line) == "introducao":
+            break
+        preamble.append(line)
+        if len(preamble) >= 45 or sum(len(item) for item in preamble) > 2200:
+            break
+    return preamble
+
+
+def _classify_preamble_line(line: str) -> str:
+    norm = _strip_accents(line.lower())
+    if any(hint in norm for hint in _INSTITUTION_HINTS):
+        return "inst"
+    if any(hint in norm for hint in _ROLE_HINTS):
+        return "role"
+    if any(hint in norm for hint in _META_NOISE):
+        return "noise"
+    letters = sum(c.isalpha() for c in line)
+    digits = sum(c.isdigit() for c in line)
+    if letters == 0 or digits > letters:
+        return "noise"
+    return "text"
+
+
+def _looks_like_person_name(fragment: str) -> bool:
+    fragment = fragment.strip()
+    if not fragment or any(c.isdigit() for c in fragment):
+        return False
+    tokens = fragment.split()
+    if not (2 <= len(tokens) <= 6) or len(fragment) > 60:
+        return False
+    capitalized = sum(1 for tok in tokens if tok[:1].isupper())
+    return capitalized >= len(tokens) - 1
+
+
+def _metadata_heuristic(text: str) -> dict[str, Any]:
+    preamble = _document_preamble(text)
+
+    # Agrupa linhas "de texto" consecutivas em blocos candidatos a título.
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in preamble:
+        if _classify_preamble_line(line) == "text":
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+
+    authors: list[str] = []
+
+    def _collect_authors(line: str) -> None:
+        for fragment in re.split(r"[;,/]|\s+e\s+", line):
+            fragment = fragment.strip()
+            if _looks_like_person_name(fragment) and fragment not in authors:
+                authors.append(fragment)
+
+    title = ""
+    title_block: list[str] = []
+    if blocks:
+        # O bloco de título tende a ser o de maior extensão textual.
+        title_block = max(blocks, key=lambda b: sum(len(item) for item in b))
+        # Dentro do bloco, separa linhas com cara de nome (autores) das de título.
+        title_lines: list[str] = []
+        for line in title_block:
+            if _looks_like_person_name(line):
+                _collect_authors(line)
+            else:
+                title_lines.append(line)
+        title = _normalize_spaces(" ".join(title_lines))
+
+    # Autores adicionais em linhas de texto fora do bloco de título.
+    for line in preamble:
+        if line in title_block or _classify_preamble_line(line) != "text":
+            continue
+        _collect_authors(line)
+
+    return {"titulo": title, "autores": authors[:8], "extraido_por": "regras"}
+
+
+def extract_document_metadata(text: str, api_key: str | None = None) -> dict[str, Any]:
+    """Extract title and authors from the document preamble.
+
+    Uses local heuristics by default; when a Gemini key is available, refines the
+    extraction with the model. Always returns a usable structure even on failure,
+    so the user can correct it manually afterwards.
+    """
+    heuristic = _metadata_heuristic(text)
+
+    resolved_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not resolved_key:
+        return heuristic
+
+    preamble_text = "\n".join(_document_preamble(text))[:2200]
+    if not preamble_text.strip():
+        return heuristic
+
+    prompt = (
+        "Extraia os metadados acadêmicos do trecho inicial de um documento (TCC ou artigo científico).\n"
+        "Identifique o título completo do trabalho e os nomes dos autores. "
+        "NÃO inclua orientadores, coorientadores, membros de banca, instituições, "
+        "cursos, datas ou cidades na lista de autores.\n\n"
+        "Responda apenas com JSON no formato:\n"
+        '{"titulo": "...", "autores": ["..."]}\n\n'
+        f"Trecho inicial:\n{preamble_text}"
+    )
+
+    try:
+        client = google_genai.Client(api_key=resolved_key)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        raw = getattr(response, "text", "") or ""
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            titulo = _normalize_spaces(str(data.get("titulo", ""))) or heuristic["titulo"]
+            autores_raw = data.get("autores", [])
+            autores = [
+                _normalize_spaces(str(a)) for a in autores_raw
+                if isinstance(a, str) and a.strip()
+            ]
+            return {
+                "titulo": titulo,
+                "autores": autores or heuristic["autores"],
+                "extraido_por": "ia",
+            }
+    except Exception:
+        pass
+
+    return heuristic
+
+
+# ── Elementos da Introdução ─────────────────────────────────────────────────────
+
+INTRO_ELEMENT_LABELS = {
+    "contextualizacao": "Contextualização do tema",
+    "problema": "Problema / questão de pesquisa",
+    "lacuna": "Lacuna identificada",
+    "justificativa": "Justificativa / relevância",
+    "objetivo_geral": "Objetivo geral",
+    "objetivos_especificos": "Objetivos específicos",
+    "proposta": "Proposta do trabalho",
+    "contribuicao": "Contribuição esperada",
+    "metodologia": "Indicação de metodologia",
+}
+
+# Cada regra: (tipo, pistas fortes, pistas fracas). Pistas comparadas sem acento.
+_INTRO_ELEMENT_RULES: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    ("objetivo_geral",
+     ("objetivo geral", "tem como objetivo", "tem por objetivo", "este trabalho objetiva",
+      "o objetivo deste", "objetivo deste estudo", "objetivo desta pesquisa", "tem o objetivo de"),
+     ("objetivo", "visa ", "pretende", "busca ", "propoe-se a")),
+    ("objetivos_especificos",
+     ("objetivos especificos",),
+     ("especificamente", "dentre os objetivos")),
+    ("problema",
+     ("problema de pesquisa", "questao de pesquisa", "questao norteadora",
+      "pergunta de pesquisa", "problematica", "questao central"),
+     ("o problema", "de que forma", "como garantir", "como pode", "como resolver")),
+    ("lacuna",
+     ("lacuna",),
+     ("ainda nao", "pouco explorado", "carencia", "escassez", "falta de",
+      "nao ha consenso", "poucos estudos", "pouca atencao")),
+    ("justificativa",
+     ("justifica-se", "se justifica", "justificativa"),
+     ("relevancia", "importancia", "torna-se relevante", "necessidade de", "motiva")),
+    ("proposta",
+     ("este trabalho propoe", "propoe-se", "propomos", "apresenta-se uma proposta",
+      "este artigo propoe"),
+     ("proposta", "este trabalho apresenta", "desenvolve-se")),
+    ("contribuicao",
+     ("contribuicao deste", "as contribuicoes deste"),
+     ("contribuir", "espera-se que", "beneficio", "impacto esperado")),
+    ("metodologia",
+     ("abordagem metodologica", "metodologia adotada"),
+     ("metodologia", "por meio de", "utilizou-se", "foi realizada", "aplicou-se")),
+    ("contextualizacao",
+     (),
+     ("atualmente", "nos ultimos anos", "cada vez mais", "cenario", "panorama", "contexto")),
+]
+
+
+def _intro_paragraphs(intro_text: str) -> list[str]:
+    paras = [p.strip() for p in re.split(r"\n\s*\n", intro_text) if p.strip()]
+    if len(paras) <= 1:
+        sentences = _split_sentences(intro_text)
+        if len(sentences) > 1:
+            return sentences
+    return paras or [intro_text.strip()]
+
+
+def _intro_elements_heuristic(intro_text: str) -> list[dict[str, Any]]:
+    paragraphs = _intro_paragraphs(intro_text)
+    total = len(paragraphs)
+    found: list[dict[str, Any]] = []
+    per_type_count: dict[str, int] = {}
+
+    for p_idx, paragraph in enumerate(paragraphs):
+        sentences = _split_sentences(paragraph) or [paragraph]
+        norm_para = _strip_accents(paragraph.lower())
+        for tipo, strong, weak in _INTRO_ELEMENT_RULES:
+            if per_type_count.get(tipo, 0) >= 2:
+                continue
+            hit_strong = any(cue in norm_para for cue in strong)
+            hit_weak = hit_strong or any(cue in norm_para for cue in weak)
+            if not hit_weak:
+                continue
+            # Escolhe a frase do parágrafo que contém a pista.
+            cues = strong if hit_strong else weak
+            excerpt = paragraph
+            for sentence in sentences:
+                norm_sentence = _strip_accents(sentence.lower())
+                if any(cue in norm_sentence for cue in cues):
+                    excerpt = sentence
+                    break
+            excerpt = _normalize_spaces(excerpt)[:600]
+            if any(e["trecho"] == excerpt and e["tipo"] == tipo for e in found):
+                continue
+            ratio = p_idx / max(total - 1, 1)
+            posicao = "início" if ratio < 0.34 else "meio" if ratio < 0.67 else "final"
+            confianca = "media" if hit_strong else "baixa"
+            found.append({
+                "tipo": tipo,
+                "rotulo": INTRO_ELEMENT_LABELS[tipo],
+                "trecho": excerpt,
+                "localizacao": f"Parágrafo {p_idx + 1} ({posicao} da introdução)",
+                "confianca": confianca,
+                "usar": confianca != "baixa",
+            })
+            per_type_count[tipo] = per_type_count.get(tipo, 0) + 1
+
+    return found[:14]
+
+
+def analyze_intro_elements(intro_text: str, api_key: str | None = None) -> list[dict[str, Any]]:
+    """Identify academic elements (problem, objectives, gap, etc.) inside the Introduction.
+
+    Returns excerpts preserving the document's original text. Uses local rules by
+    default and refines with Gemini when a key is available; on AI failure, the
+    rule-based result is preserved so the flow never breaks.
+    """
+    intro_text = (intro_text or "").strip()
+    if not intro_text:
+        return []
+
+    heuristic = _intro_elements_heuristic(intro_text)
+
+    resolved_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not resolved_key:
+        return heuristic
+
+    tipos = ", ".join(INTRO_ELEMENT_LABELS.keys())
+    prompt = (
+        "Analise o texto da Introdução de um trabalho acadêmico (TCC ou artigo).\n"
+        "Localize trechos que representem os seguintes tipos de elemento: "
+        f"{tipos}.\n"
+        "Regras importantes:\n"
+        "- Use SEMPRE o texto original do documento no campo 'trecho', sem reescrever ou parafrasear.\n"
+        "- Um mesmo trecho pode conter mais de um elemento; nesse caso, gere um item para cada elemento.\n"
+        "- Indique a localização aproximada (ex.: 'início da introdução', 'parágrafo 2').\n"
+        "- Indique o grau de confiança como 'alta', 'media' ou 'baixa'.\n\n"
+        "Responda apenas com JSON:\n"
+        '{"elementos": [{"tipo": "...", "trecho": "...", "localizacao": "...", "confianca": "alta|media|baixa"}]}\n\n'
+        f"Introdução:\n{intro_text[:4000]}"
+    )
+
+    try:
+        client = google_genai.Client(api_key=resolved_key)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        raw = getattr(response, "text", "") or ""
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            elementos: list[dict[str, Any]] = []
+            for item in data.get("elementos", []):
+                tipo = str(item.get("tipo", "")).strip().lower()
+                trecho = _normalize_spaces(str(item.get("trecho", "")))
+                if tipo not in INTRO_ELEMENT_LABELS or not trecho:
+                    continue
+                confianca = str(item.get("confianca", "media")).strip().lower()
+                if confianca not in {"alta", "media", "baixa"}:
+                    confianca = "media"
+                elementos.append({
+                    "tipo": tipo,
+                    "rotulo": INTRO_ELEMENT_LABELS[tipo],
+                    "trecho": trecho[:600],
+                    "localizacao": _normalize_spaces(str(item.get("localizacao", ""))) or "Introdução",
+                    "confianca": confianca,
+                    "usar": confianca != "baixa",
+                })
+            if elementos:
+                return elementos
+    except Exception:
+        pass
+
+    return heuristic
+
+
+# ── Montagem das seções a partir do mapeamento confirmado ───────────────────────
+
+# Quais elementos da Introdução podem suprir cada seção central ausente.
+_INTRO_ELEMENT_TO_SECTION = {
+    "problema": ("problema", "lacuna"),
+    "objetivos": ("objetivo_geral", "objetivos_especificos", "proposta"),
+}
+
+
+def assemble_sections_from_mapping(
+    segments: list[dict],
+    user_mapping: dict[str, str],
+    intro_elements: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Build the analysis input from the user-confirmed segment mapping.
+
+    Returns the core sections dict, the Referencial Teórico text (context only),
+    and the origin of each strategic section ('secao_propria', 'introducao' or
+    'ausente'). Problem/objectives identified inside the Introduction are only used
+    when there is no dedicated section, and never counted more than once.
+    """
+    buckets: dict[str, list[str]] = {key: [] for key in MAPPABLE_SECTIONS}
+    for idx, seg in enumerate(segments):
+        role = user_mapping.get(str(idx)) or seg.get("sugerido")
+        if role not in MAPPABLE_SECTIONS:
+            continue
+        text = (seg.get("content") or "").strip()
+        if text:
+            buckets[role].append(text)
+
+    sections = {
+        key: _normalize_spaces("\n".join(buckets[key])) for key in SECTIONS_ORDER
+    }
+    referencial = _normalize_spaces("\n".join(buckets["referencial"]))
+
+    origem: dict[str, str] = {}
+    confirmed = [e for e in (intro_elements or []) if e.get("usar")]
+
+    for section_key, tipos in _INTRO_ELEMENT_TO_SECTION.items():
+        if sections.get(section_key):
+            origem[section_key] = "secao_propria"
+            continue
+        trechos = [
+            e["trecho"] for e in confirmed
+            if e.get("tipo") in tipos and e.get("trecho")
+        ]
+        if trechos:
+            sections[section_key] = _normalize_spaces("\n".join(trechos))
+            origem[section_key] = "introducao"
+        else:
+            origem[section_key] = "ausente"
+
+    return {
+        "sections": sections,
+        "referencial": referencial,
+        "origem_secoes": origem,
+    }
 
 
 def report_to_markdown(payload: dict[str, Any]) -> str:

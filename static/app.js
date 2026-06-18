@@ -13,11 +13,14 @@ const SECTION_OPTIONS = [
   { value: 'introducao',  label: 'Introdução' },
   { value: 'problema',    label: 'Problema de Pesquisa' },
   { value: 'objetivos',   label: 'Objetivos' },
+  { value: 'referencial', label: 'Referencial Teórico' },
   { value: 'metodologia', label: 'Metodologia' },
   { value: 'resultados',  label: 'Resultados' },
   { value: 'conclusao',   label: 'Conclusão' },
   { value: 'ignorar',     label: 'Ignorar este trecho' },
 ];
+
+const SECTION_LABELS = Object.fromEntries(SECTION_OPTIONS.map(o => [o.value, o.label]));
 
 // ── State ─────────────────────────────────────────────────────────────────────
 // phase: 'ai-decision' → 'mode-select' → 'manual' | 'upload'
@@ -42,6 +45,8 @@ const state = {
   uploadFile: null,
   documentSegments: null,
   sectionMapping: {},
+  metadados: { titulo: '', autores: [], extraido_por: '' },
+  introElementos: [],
 
   // Shared
   rigor: 'Médio',
@@ -382,14 +387,63 @@ function renderUploadConfigPage() {
 
 function renderMappingReviewPage() {
   const segs = state.documentSegments || [];
+  const meta = state.metadados || { titulo: '', autores: [] };
+  const metaSource = meta.extraido_por === 'ia' ? 'IA' : meta.extraido_por === 'regras' ? 'regras locais' : '';
+  const autoresStr = Array.isArray(meta.autores) ? meta.autores.join('; ') : (meta.autores || '');
 
+  // ── Metadata block (title + authors, editable) ──
+  const metaBlock = `
+    <div class="meta-block">
+      <div class="meta-block-header">
+        <span>Metadados do documento</span>
+        ${metaSource ? `<span class="meta-source">extraído por ${metaSource}</span>` : ''}
+      </div>
+      <div class="meta-note">Título e autores não são seções acadêmicas e não entram no cálculo do IGC. Corrija se necessário — sua correção tem prioridade.</div>
+      <label class="meta-field">
+        <span class="meta-field-label">Título</span>
+        <input type="text" id="meta-titulo" class="meta-input" value="${escHtml(meta.titulo || '')}" placeholder="Título do trabalho">
+      </label>
+      <label class="meta-field">
+        <span class="meta-field-label">Autores <small>(separe por ponto e vírgula)</small></span>
+        <input type="text" id="meta-autores" class="meta-input" value="${escHtml(autoresStr)}" placeholder="Nome 1; Nome 2">
+      </label>
+    </div>`;
+
+  // ── Intro elements block ──
+  const introBlock = (state.introElementos && state.introElementos.length) ? `
+    <div class="intro-elements-block">
+      <div class="section-heading" style="margin-top:0">Elementos identificados na Introdução</div>
+      <div class="meta-note">Trechos originais localizados na Introdução. Quando não houver seção própria de Problema ou Objetivos, os elementos confirmados aqui serão usados nos pares correspondentes. Desmarque para rejeitar.</div>
+      ${state.introElementos.map((el, i) => {
+        const conf = el.confianca || 'media';
+        const confCls = conf === 'alta' ? 'conf-alta' : conf === 'media' ? 'conf-media' : 'conf-baixa';
+        return `
+        <div class="intro-element ${el.usar ? '' : 'rejected'}">
+          <label class="intro-element-check">
+            <input type="checkbox" data-intro-el="${i}" ${el.usar ? 'checked' : ''}>
+          </label>
+          <div class="intro-element-body">
+            <div class="intro-element-head">
+              <span class="intro-element-type">${escHtml(el.rotulo || el.tipo)}</span>
+              <span class="conf-badge ${confCls}">confiança: ${conf}</span>
+            </div>
+            <div class="intro-element-trecho">"${escHtml(el.trecho || '')}"</div>
+            ${el.localizacao ? `<div class="intro-element-loc">${escHtml(el.localizacao)}</div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+
+  // ── Segments (with original headings preserved) ──
   const segRows = segs.map((seg, i) => {
-    const current = state.sectionMapping[String(i)] || seg.sugerido || '';
+    const current = (state.sectionMapping[String(i)] !== undefined)
+      ? state.sectionMapping[String(i)]
+      : (seg.sugerido || '');
     const opts = SECTION_OPTIONS.map(o =>
       `<option value="${o.value}" ${current === o.value ? 'selected' : ''}>${o.label}</option>`
     ).join('');
-    const preview = seg.content ? seg.content.slice(0, 140).trim() + (seg.content.length > 140 ? '…' : '') : '';
-    const aiTag = seg.sugerido ? `<span class="ai-suggestion-tag">IA: ${SECTION_OPTIONS.find(o => o.value === seg.sugerido)?.label || seg.sugerido}</span>` : '';
+    const preview = seg.content ? seg.content.slice(0, 160).trim() + (seg.content.length > 160 ? '…' : '') : '';
+    const aiTag = seg.sugerido ? `<span class="ai-suggestion-tag">sugestão: ${SECTION_LABELS[seg.sugerido] || seg.sugerido}</span>` : '';
 
     return `
       <div class="segment-row">
@@ -405,25 +459,30 @@ function renderMappingReviewPage() {
       </div>`;
   }).join('');
 
-  const additionalBlock = state.useAI ? `
-    <div class="config-label" style="margin-top:1.5rem">Contexto complementar para a IA</div>
+  const additionalBlock = `
+    <div class="config-label" style="margin-top:1.5rem">Informações complementares</div>
     <textarea
       id="additional-info-input"
       class="section-textarea additional-textarea"
-      placeholder="Informações adicionais sobre o tema, problema ou objetivos que a IA deve considerar…"
+      placeholder="Contexto adicional sobre o tema, problema ou objetivos para apoiar a análise…"
       rows="3"
-    >${escHtml(state.additionalInfo)}</textarea>` : '';
+    >${escHtml(state.additionalInfo)}</textarea>`;
 
   return `
     <div class="container">
       ${renderHeader()}
       <div class="card">
-        <div class="step-badge">Mapeamento de Seções</div>
-        <div class="step-title">Confirme as seções detectadas</div>
+        <div class="step-badge">Revisão do Mapeamento</div>
+        <div class="step-title">Confirme metadados e seções</div>
         <div class="step-desc">
-          Revise o mapeamento automático${state.useAI ? ' sugerido pela IA' : ''}. Corrija os papéis incorretos antes de iniciar a análise.
+          Revise o mapeamento automático${state.useAI ? ' sugerido pela IA' : ' (baseado em regras locais)'}.
+          Corrija o que estiver incorreto antes de iniciar a análise. Os títulos originais das seções são preservados.
         </div>
 
+        ${metaBlock}
+        ${introBlock}
+
+        <div class="section-heading">Seções e subseções detectadas</div>
         <div class="segments-list">${segRows || '<p style="color:var(--text-muted);font-size:.88rem">Nenhum segmento detectado.</p>'}</div>
         ${additionalBlock}
 
@@ -490,6 +549,38 @@ function renderResultsPage() {
       <div class="doc-info-sections">${Object.values(r.secoes_detectadas || {}).filter(v => v && v.trim()).length} seções detectadas</div>
     </div>` : '';
 
+  // Document metadata header (title + authors) — not academic sections
+  const meta = r.metadados || {};
+  const autores = Array.isArray(meta.autores) ? meta.autores.filter(Boolean) : [];
+  const metaHeaderHtml = (meta.titulo || autores.length) ? `
+    <div class="results-meta">
+      ${meta.titulo ? `<div class="results-meta-title">${escHtml(meta.titulo)}</div>` : ''}
+      ${autores.length ? `<div class="results-meta-authors">${escHtml(autores.join(' · '))}</div>` : ''}
+    </div>` : '';
+
+  // Origin of strategic elements (own section vs. inside Introduction)
+  const origemLabels = {
+    secao_propria: 'seção própria do documento',
+    introducao: 'identificado dentro da Introdução',
+    ausente: 'não localizado (informação insuficiente)',
+  };
+  const origem = r.origem_secoes || {};
+  const origemEntries = Object.entries(origem).filter(([, v]) => v === 'introducao' || v === 'ausente');
+  const origemHtml = origemEntries.length ? `
+    <div class="origem-notice">
+      ${origemEntries.map(([k, v]) => {
+        const label = k === 'problema' ? 'Problema' : k === 'objetivos' ? 'Objetivos' : k;
+        return `<div>• <strong>${label}:</strong> ${origemLabels[v] || v}.</div>`;
+      }).join('')}
+      <div class="origem-foot">Elementos identificados dentro da Introdução foram detectados automaticamente e confirmados na revisão.</div>
+    </div>` : '';
+
+  // Referencial Teórico presence (context only)
+  const referencialHtml = (r.referencial && r.referencial.trim()) ? `
+    <div class="referencial-notice">
+      <strong>Referencial Teórico detectado.</strong> Usado como contexto da análise e do relatório; não compõe os pares estratégicos nem o IGC.
+    </div>` : '';
+
   // Warnings
   const warningsHtml = (r.avisos || []).map(w => `<div class="warning">${escHtml(w)}</div>`).join('');
 
@@ -534,6 +625,7 @@ function renderResultsPage() {
   return `
     <div class="container">
       ${renderHeader()}
+      ${metaHeaderHtml}
 
       <div class="igc-card">
         <div class="igc-number" style="color:${color}">${igc.toFixed(2)}</div>
@@ -545,6 +637,8 @@ function renderResultsPage() {
       </div>
 
       ${partialHtml}
+      ${origemHtml}
+      ${referencialHtml}
       ${docInfoHtml}
       ${warningsHtml}
 
@@ -665,12 +759,38 @@ function attachHandlers() {
   on('btn-back-upload', () => { state.uploadStep = 0; render(); });
   on('btn-extract-segments', runExtractSegments);
 
-  // Upload: mapping
+  // Upload: mapping — segment dropdowns
   document.querySelectorAll('[data-seg]').forEach(sel => {
     sel.addEventListener('change', () => {
       state.sectionMapping[sel.dataset.seg] = sel.value;
     });
   });
+
+  // Upload: mapping — metadata fields (user correction takes priority)
+  const metaTitulo = document.getElementById('meta-titulo');
+  if (metaTitulo) {
+    metaTitulo.addEventListener('input', () => {
+      state.metadados.titulo = metaTitulo.value;
+      state.metadados.extraido_por = 'manual';
+    });
+  }
+  const metaAutores = document.getElementById('meta-autores');
+  if (metaAutores) {
+    metaAutores.addEventListener('input', () => {
+      state.metadados.autores = metaAutores.value.split(';').map(s => s.trim()).filter(Boolean);
+      state.metadados.extraido_por = 'manual';
+    });
+  }
+
+  // Upload: mapping — intro element accept/reject
+  document.querySelectorAll('[data-intro-el]').forEach(chk => {
+    chk.addEventListener('change', () => {
+      const idx = parseInt(chk.dataset.introEl);
+      if (state.introElementos[idx]) state.introElementos[idx].usar = chk.checked;
+      chk.closest('.intro-element').classList.toggle('rejected', !chk.checked);
+    });
+  });
+
   on('btn-back-mapping', () => { state.uploadStep = 1; render(); });
   on('btn-analyze-mapped', runMappedAnalysis);
 
@@ -681,6 +801,7 @@ function attachHandlers() {
       step: 0, sections: Object.fromEntries(SECTIONS.map(s => [s.key, ''])),
       introChecklist: null, showingChecklist: false, additionalInfo: '',
       uploadStep: 0, uploadFile: null, documentSegments: null, sectionMapping: {},
+      metadados: { titulo: '', autores: [], extraido_por: '' }, introElementos: [],
       results: null, error: null,
     });
     render();
@@ -750,7 +871,9 @@ async function runExtractSegments() {
 
     const data = await res.json();
     state.documentSegments = data.segments || [];
-    // Pre-fill mapping with AI suggestions
+    state.metadados = data.metadados || { titulo: '', autores: [], extraido_por: '' };
+    state.introElementos = data.intro_elementos || [];
+    // Pre-fill mapping with suggestions
     state.sectionMapping = {};
     state.documentSegments.forEach((seg, i) => {
       if (seg.sugerido && seg.sugerido !== 'ignorar') state.sectionMapping[String(i)] = seg.sugerido;
@@ -779,6 +902,8 @@ async function runMappedAnalysis() {
         rigor: state.rigor,
         use_gemini: state.useAI,
         additional_info: state.additionalInfo,
+        metadados: state.metadados,
+        intro_elementos: state.introElementos,
       }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);

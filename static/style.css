@@ -975,3 +975,196 @@ body {
   font-size: 0.83rem;
   line-height: 1.5;
 }
+
+/* ── Metadata block (mapping review) ─────────────────── */
+.meta-block {
+  background: rgba(5, 12, 24, 0.62);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.meta-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 0.5rem;
+}
+
+.meta-source {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--blue-light);
+  font-size: 0.74rem;
+}
+
+.meta-note {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin-bottom: 0.85rem;
+}
+
+.meta-field {
+  display: block;
+  margin-bottom: 0.7rem;
+}
+
+.meta-field-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.meta-field-label small {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.meta-input {
+  width: 100%;
+  background: rgba(5, 12, 24, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.55rem 0.8rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.meta-input:focus { border-color: rgba(96, 165, 250, 0.42); }
+.meta-input::placeholder { color: rgba(148, 163, 184, 0.4); }
+
+/* ── Intro elements (mapping review) ─────────────────── */
+.intro-elements-block { margin-bottom: 1rem; }
+
+.intro-element {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  background: rgba(5, 12, 24, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.55rem;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.intro-element.rejected {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.intro-element-check {
+  flex-shrink: 0;
+  padding-top: 0.15rem;
+}
+
+.intro-element-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+
+.intro-element-body { flex: 1; min-width: 0; }
+
+.intro-element-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.intro-element-type {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.conf-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.conf-alta  { background: rgba(34,197,94,0.09);  border-color: rgba(34,197,94,0.28);  color: #4ade80; }
+.conf-media { background: rgba(250,204,21,0.09); border-color: rgba(250,204,21,0.28); color: #facc15; }
+.conf-baixa { background: rgba(148,163,184,0.1); border-color: rgba(148,163,184,0.25); color: var(--text-muted); }
+
+.intro-element-trecho {
+  font-size: 0.84rem;
+  color: rgba(229, 238, 251, 0.82);
+  line-height: 1.58;
+  font-style: italic;
+}
+
+.intro-element-loc {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+}
+
+/* ── Results: metadata header ────────────────────────── */
+.results-meta {
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+
+.results-meta-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.results-meta-authors {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+}
+
+/* ── Results: origin + referencial notices ───────────── */
+.origem-notice {
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 10px;
+  padding: 0.8rem 1rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  line-height: 1.6;
+  margin-bottom: 1rem;
+}
+
+.origem-foot {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.4rem;
+}
+
+.referencial-notice {
+  background: rgba(168, 85, 247, 0.07);
+  border: 1px solid rgba(168, 85, 247, 0.22);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: #ddd6fe;
+  line-height: 1.55;
+  margin-bottom: 1rem;
+}
