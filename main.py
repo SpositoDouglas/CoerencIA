@@ -15,11 +15,13 @@ from pydantic import BaseModel
 
 from coerencia_engine import (
     SECTION_LABELS,
+    SECTIONS_ORDER,
     AnalysisConfig,
     analyze_document_with_docling,
     analyze_intro_checklist,
     analyze_intro_elements,
     analyze_sections,
+    apply_intro_elements,
     assemble_sections_from_mapping,
     detect_document_segments,
     extract_document_metadata,
@@ -43,6 +45,11 @@ class AnalyzeRequest(BaseModel):
     rigor: str = "Médio"
     use_gemini: bool = False
     additional_info: str = ""
+    # Campos opcionais do fluxo manual estendido (compatível com chamadas antigas).
+    metadados: dict[str, Any] = {}
+    intro_elementos: list[dict[str, Any]] = []
+    referencial_subsecoes: list[dict[str, Any]] = []
+    outras_secoes: list[dict[str, Any]] = []
 
 
 class AnalyzeMappedRequest(BaseModel):
@@ -72,6 +79,42 @@ def check_ai():
 
 # ── Manual analysis endpoints ──────────────────────────────────────────────────
 
+def _build_referencial_text(subsecoes: list[dict[str, Any]]) -> str:
+    """Join Referencial Teórico subsections (title + content) into context text."""
+    parts: list[str] = []
+    for sub in subsecoes or []:
+        head = " ".join(
+            str(sub.get(k, "")).strip() for k in ("numeracao", "titulo")
+        ).strip()
+        body = str(sub.get("conteudo", "")).strip()
+        block = "\n".join(p for p in (head, body) if p).strip()
+        if block:
+            parts.append(block)
+    return "\n\n".join(parts)
+
+
+def _run_manual_analysis(req: AnalyzeRequest, config: AnalysisConfig) -> tuple[dict, dict]:
+    """Build the manual-flow analysis result, reusing the shared engine logic.
+
+    Mirrors the automatic flow: a dedicated section has priority; confirmed
+    Introduction excerpts feed Problem/Objectives only when there is no dedicated
+    section; Referencial Teórico is context-only and never enters the IGC.
+    Returns (result, sections).
+    """
+    sections = {key: (req.sections.get(key, "") or "") for key in SECTIONS_ORDER}
+    sections, origem = apply_intro_elements(sections, req.intro_elementos)
+    referencial = _build_referencial_text(req.referencial_subsecoes)
+
+    result = analyze_sections(
+        sections, config, referencial=referencial, origem_secoes=origem
+    )
+    result["metadados"] = req.metadados or {}
+    result["referencial_subsecoes"] = req.referencial_subsecoes or []
+    result["outras_secoes"] = req.outras_secoes or []
+    result["intro_elementos"] = [e for e in (req.intro_elementos or []) if e.get("usar")]
+    return result, sections
+
+
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
     config = AnalysisConfig(
@@ -80,7 +123,8 @@ def analyze(req: AnalyzeRequest):
         nivel_rigor=req.rigor,
     )
     try:
-        return analyze_sections(req.sections, config)
+        result, _ = _run_manual_analysis(req, config)
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -100,9 +144,9 @@ def analyze_with_gemini(req: AnalyzeRequest):
         nivel_rigor=req.rigor,
     )
     try:
-        result = analyze_sections(req.sections, config)
+        result, sections = _run_manual_analysis(req, config)
         result["gemini_report"] = _call_gemini_report(
-            req.sections, result, req.rigor, api_key, req.additional_info
+            sections, result, req.rigor, api_key, req.additional_info
         )
         return result
     except HTTPException:
@@ -130,6 +174,46 @@ def intro_analysis(req: IntroAnalysisRequest):
         return {"elementos": elementos}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Intro elements (manual flow) ───────────────────────────────────────────────
+
+class IntroElementsRequest(BaseModel):
+    intro_text: str
+    use_gemini: bool = False
+
+
+@app.post("/api/intro-elements")
+def intro_elements(req: IntroElementsRequest):
+    """Identify Introduction elements for the manual flow (excerpts + confidence).
+
+    Never blocks the flow: with AI enabled it tries Gemini and, on failure, falls
+    back to the local rule-based identification while signalling that the automatic
+    identification could not be completed. Without a key it uses local rules.
+    """
+    text = (req.intro_text or "").strip()
+    if not text:
+        return {"elementos": [], "metodo": "local", "erro": None}
+
+    api_key = _get_api_key() if req.use_gemini else None
+    if not api_key:
+        return {"elementos": analyze_intro_elements(text, None), "metodo": "local", "erro": None}
+
+    try:
+        from coerencia_engine import _intro_elements_ai, _intro_elements_heuristic
+
+        elementos = _intro_elements_ai(text, api_key)
+        if elementos:
+            return {"elementos": elementos, "metodo": "ia", "erro": None}
+        return {"elementos": _intro_elements_heuristic(text), "metodo": "local", "erro": None}
+    except Exception:
+        from coerencia_engine import _intro_elements_heuristic
+
+        return {
+            "elementos": _intro_elements_heuristic(text),
+            "metodo": "local",
+            "erro": "A identificação automática por IA não pôde ser concluída. Sugestões locais foram aplicadas; revise e ajuste manualmente.",
+        }
 
 
 # ── Document upload: segment extraction ───────────────────────────────────────
@@ -297,6 +381,16 @@ def _call_gemini_report(
         if referencial else ""
     )
 
+    outras = analysis.get("outras_secoes", []) or []
+    outras_block = ""
+    if outras:
+        outras_txt = "\n\n".join(
+            f"**{(o.get('titulo') or 'Outra seção').strip()}:**\n{(o.get('conteudo') or '').strip()[:800]}"
+            for o in outras if (o.get("conteudo") or "").strip()
+        )
+        if outras_txt:
+            outras_block = f"\n\nOutras seções informadas (contexto — não entram no IGC):\n{outras_txt}"
+
     section_order = [
         ("introducao", "Introdução"),
         ("problema", "Problema de Pesquisa"),
@@ -321,7 +415,7 @@ def _call_gemini_report(
         f"Pares avaliados:\n{pairs_lines}\n"
         + (f"\nPares não avaliados (seção ausente):\n{skipped_lines}\n" if skipped_lines else "")
         + (f"\nOrigem dos elementos centrais:\n{origem_lines}\n" if origem_lines else "")
-        + f"\nTextos das seções:\n{sections_block}{referencial_block}{extra_block}\n\n"
+        + f"\nTextos das seções:\n{sections_block}{referencial_block}{outras_block}{extra_block}\n\n"
         f"Gere um diagnóstico em Markdown com:\n"
         f"1. Avaliação geral da coerência\n"
         f"2. Pares com maior e menor alinhamento, explicando o porquê\n"

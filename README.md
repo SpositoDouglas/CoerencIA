@@ -10,7 +10,14 @@ O sistema detecta automaticamente desalinhamentos semânticos entre seções de 
 
 O CoerencIA oferece dois modos de entrada, e a análise qualitativa por IA é opcional em ambos:
 
-**Preenchimento manual** — você cola o texto de cada seção em um wizard passo a passo.
+**Preenchimento manual** — um fluxo guiado e flexível, com as mesmas capacidades do modo automático:
+
+1. Informa os **metadados** (título e autores), que são opcionais e editáveis
+2. Preenche a **Introdução** (sempre a primeira seção acadêmica)
+3. O sistema **analisa a Introdução** e apresenta uma checklist editável dos elementos identificados (contextualização, problema, lacuna, justificativa, objetivos, proposta…), com trecho original, grau de confiança e opção de confirmar, rejeitar ou alterar a categoria. Um mesmo trecho pode receber mais de uma categoria, e o usuário pode adicionar elementos manualmente
+4. Pergunta explicitamente se **a próxima seção é o Referencial Teórico**. Em caso afirmativo, abre uma etapa dedicada onde o título original é preservado e o conteúdo pode ser dividido em subseções (numeração, título e texto), com controles para adicionar, editar, remover e reordenar
+5. Permite escolher livremente a **próxima seção** (Problema, Objetivos, Metodologia, Resultados, Conclusão, Outra seção ou Finalizar), informando-as na ordem em que aparecem no documento
+6. Apresenta uma **revisão final** com metadados, Introdução, elementos confirmados, seções, Referencial Teórico, outras seções, origem de cada conteúdo e seções ausentes — que o usuário confirma antes da análise
 
 **Upload de documento (PDF/DOCX)** — o sistema executa um fluxo automático de compreensão do documento antes da análise:
 
@@ -34,7 +41,9 @@ Opcionalmente, você pode ativar a **análise qualitativa com Gemini**, que gera
 - **Elementos da Introdução:** quando o problema ou os objetivos não existem como seções próprias, mas são identificados e confirmados dentro da Introdução, os trechos correspondentes passam a ser usados nos pares estratégicos aplicáveis, sem serem contabilizados em duplicidade. Se nem a seção própria nem um trecho confiável forem encontrados, o elemento é considerado ausente e os pares dependentes aparecem como **“não avaliados por informação insuficiente”** (nunca recebem similaridade zero).
 - **Referencial Teórico:** reconhecido a partir de títulos equivalentes (Fundamentação Teórica, Revisão de Literatura, Estado da Arte, Trabalhos Relacionados, Background, Literature Review, entre outros). É exibido e usado como contexto da análise e do relatório, mas **não altera a fórmula do IGC nem adiciona novos pares estratégicos**. Subseções teóricas têm seus títulos originais preservados e podem ser classificadas individualmente ou agrupadas.
 
-O relatório final indica quando um problema ou objetivo veio de uma seção própria e quando foi identificado dentro da Introdução por análise automática.
+Esse comportamento é o mesmo nos dois modos. A **origem** de cada conteúdo central é registrada e exibida como: seção preenchida manualmente (`seção própria`), trecho identificado dentro da Introdução (`introdução`) ou `ausente`. Quando existe seção própria, ela tem prioridade no par estratégico, e os trechos da Introdução permanecem disponíveis como evidência complementar no relatório. As **informações complementares** e as **outras seções** informadas pelo usuário servem apenas como contexto do relatório qualitativo e não entram no IGC.
+
+O painel de resultados diferencia visualmente **baixa coerência** de **informação insuficiente**: uma seção ausente nunca recebe similaridade zero — o par correspondente é marcado como “não avaliado por informação insuficiente”, e o IGC é calculado apenas com os pares válidos.
 
 ---
 
@@ -138,7 +147,8 @@ CoerencIA/
 | `GET`  | `/api/check-ai` | Informa se há chave Gemini configurada no servidor |
 | `POST` | `/api/analyze` | Análise SBERT do preenchimento manual (somente local) |
 | `POST` | `/api/analyze/full` | Análise SBERT + diagnóstico Gemini (manual) |
-| `POST` | `/api/intro-analysis` | Checklist de elementos da Introdução (manual, com IA) |
+| `POST` | `/api/intro-elements` | Identificação de elementos da Introdução (IA com fallback local) |
+| `POST` | `/api/intro-analysis` | Checklist de elementos da Introdução (legado) |
 | `POST` | `/api/extract-segments` | Upload: extrai texto, metadados, segmentos e elementos da Introdução |
 | `POST` | `/api/analyze-mapped` | Upload: análise a partir do mapeamento confirmado pelo usuário |
 

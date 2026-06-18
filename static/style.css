@@ -1168,3 +1168,197 @@ body {
   line-height: 1.55;
   margin-bottom: 1rem;
 }
+
+/* ── Manual flow: small buttons ──────────────────────── */
+.btn-sm {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+
+.mini-btn, .mini-btn-danger {
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 7px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.mini-btn:hover:not(:disabled) { border-color: rgba(96,165,250,0.4); color: var(--text); }
+.mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.mini-btn-danger { color: #fca5a5; border-color: rgba(248,113,113,0.25); }
+.mini-btn-danger:hover { background: rgba(248,113,113,0.1); }
+
+/* ── Manual intro element: category + manual trecho ──── */
+.intro-cat-select {
+  background: rgba(5, 12, 24, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.5rem;
+  outline: none;
+  cursor: pointer;
+}
+.intro-cat-select:focus { border-color: rgba(96,165,250,0.42); }
+
+.intro-trecho-input {
+  width: 100%;
+  background: rgba(5, 12, 24, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  padding: 0.5rem 0.7rem;
+  resize: vertical;
+  outline: none;
+}
+.intro-trecho-input:focus { border-color: rgba(96,165,250,0.42); }
+
+.conf-manual { background: rgba(96,165,250,0.1); border-color: rgba(96,165,250,0.28); color: var(--blue-light); }
+
+/* ── Referencial subsection editor ───────────────────── */
+.subsec-list { display: flex; flex-direction: column; gap: 0.75rem; margin: 0.6rem 0; }
+
+.subsec-card {
+  background: rgba(5, 12, 24, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+}
+.subsec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+.subsec-index { font-size: 0.8rem; font-weight: 700; color: var(--blue-light); }
+.subsec-actions { display: flex; gap: 0.35rem; }
+.subsec-fields { display: flex; gap: 0.6rem; margin-bottom: 0.6rem; }
+.subsec-num { max-width: 110px; }
+.subsec-conteudo { min-height: 90px; }
+
+@media (max-width: 520px) {
+  .subsec-fields { flex-direction: column; }
+  .subsec-num { max-width: none; }
+}
+
+/* ── Pick next section grid ──────────────────────────── */
+.pick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+  margin: 0.5rem 0;
+}
+@media (max-width: 520px) { .pick-grid { grid-template-columns: 1fr; } }
+
+.pick-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+  background: rgba(5, 12, 24, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  transition: border-color 0.15s, transform 0.12s;
+}
+.pick-card:hover { border-color: rgba(96,165,250,0.4); transform: translateY(-2px); }
+.pick-card.filled { border-color: rgba(34,197,94,0.32); background: rgba(34,197,94,0.05); }
+.pick-card.outra { border-style: dashed; }
+.pick-title { font-size: 0.95rem; font-weight: 700; }
+.pick-status { font-size: 0.78rem; color: var(--text-muted); }
+.pick-card.filled .pick-status { color: var(--green); }
+
+.outras-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.outra-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(5,12,24,0.5);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+}
+.outra-title { flex: 1; font-size: 0.86rem; font-weight: 600; }
+
+/* ── Manual review ───────────────────────────────────── */
+.review-list { display: flex; flex-direction: column; gap: 0.6rem; margin: 0.5rem 0 0.5rem; }
+
+.review-row {
+  background: rgba(5, 12, 24, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.95rem;
+}
+.review-row.empty { opacity: 0.7; border-style: dashed; }
+.review-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+.review-label { font-size: 0.88rem; font-weight: 700; color: var(--text); margin-right: auto; }
+.review-content { font-size: 0.83rem; color: var(--text-muted); line-height: 1.55; }
+.review-el { font-size: 0.82rem; color: var(--text-muted); line-height: 1.55; margin-top: 0.25rem; }
+.review-el strong { color: rgba(229,238,251,0.9); }
+
+/* ── Origin tags ─────────────────────────────────────── */
+.origin-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.06rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.origin-own     { background: rgba(34,197,94,0.09);  border-color: rgba(34,197,94,0.28);  color: #4ade80; }
+.origin-intro   { background: rgba(59,130,246,0.1);  border-color: rgba(59,130,246,0.28); color: var(--blue-light); }
+.origin-missing { background: rgba(148,163,184,0.1); border-color: rgba(148,163,184,0.25); color: var(--text-muted); }
+.origin-context { background: rgba(168,85,247,0.1);  border-color: rgba(168,85,247,0.28); color: #ddd6fe; }
+
+.origem-title {
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.insuf-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,184,0.25);
+  background: rgba(148,163,184,0.1);
+  color: var(--text-muted);
+  vertical-align: middle;
+  margin-left: 0.4rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Referencial subsection chips (results) ──────────── */
+.ref-subs { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.ref-sub-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(168,85,247,0.12);
+  border: 1px solid rgba(168,85,247,0.28);
+  color: #ddd6fe;
+}

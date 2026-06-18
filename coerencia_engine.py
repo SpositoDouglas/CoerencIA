@@ -1277,6 +1277,55 @@ def _intro_elements_heuristic(intro_text: str) -> list[dict[str, Any]]:
     return found[:14]
 
 
+def _intro_elements_ai(intro_text: str, api_key: str) -> list[dict[str, Any]]:
+    """Call Gemini to identify Introduction elements. Raises on API/parse failure.
+
+    Kept separate from the public function so callers that need to detect an AI
+    failure (e.g. to inform the user) can do so without the silent fallback.
+    """
+    tipos = ", ".join(INTRO_ELEMENT_LABELS.keys())
+    prompt = (
+        "Analise o texto da Introdução de um trabalho acadêmico (TCC ou artigo).\n"
+        "Localize trechos que representem os seguintes tipos de elemento: "
+        f"{tipos}.\n"
+        "Regras importantes:\n"
+        "- Use SEMPRE o texto original do documento no campo 'trecho', sem reescrever ou parafrasear.\n"
+        "- Um mesmo trecho pode conter mais de um elemento; nesse caso, gere um item para cada elemento.\n"
+        "- Indique a localização aproximada (ex.: 'início da introdução', 'parágrafo 2').\n"
+        "- Indique o grau de confiança como 'alta', 'media' ou 'baixa'.\n\n"
+        "Responda apenas com JSON:\n"
+        '{"elementos": [{"tipo": "...", "trecho": "...", "localizacao": "...", "confianca": "alta|media|baixa"}]}\n\n'
+        f"Introdução:\n{intro_text[:4000]}"
+    )
+
+    client = google_genai.Client(api_key=api_key)
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    raw = getattr(response, "text", "") or ""
+    json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not json_match:
+        raise ValueError("Resposta da IA sem JSON reconhecível.")
+
+    data = json.loads(json_match.group())
+    elementos: list[dict[str, Any]] = []
+    for item in data.get("elementos", []):
+        tipo = str(item.get("tipo", "")).strip().lower()
+        trecho = _normalize_spaces(str(item.get("trecho", "")))
+        if tipo not in INTRO_ELEMENT_LABELS or not trecho:
+            continue
+        confianca = str(item.get("confianca", "media")).strip().lower()
+        if confianca not in {"alta", "media", "baixa"}:
+            confianca = "media"
+        elementos.append({
+            "tipo": tipo,
+            "rotulo": INTRO_ELEMENT_LABELS[tipo],
+            "trecho": trecho[:600],
+            "localizacao": _normalize_spaces(str(item.get("localizacao", ""))) or "Introdução",
+            "confianca": confianca,
+            "usar": confianca != "baixa",
+        })
+    return elementos
+
+
 def analyze_intro_elements(intro_text: str, api_key: str | None = None) -> list[dict[str, Any]]:
     """Identify academic elements (problem, objectives, gap, etc.) inside the Introduction.
 
@@ -1294,51 +1343,11 @@ def analyze_intro_elements(intro_text: str, api_key: str | None = None) -> list[
     if not resolved_key:
         return heuristic
 
-    tipos = ", ".join(INTRO_ELEMENT_LABELS.keys())
-    prompt = (
-        "Analise o texto da Introdução de um trabalho acadêmico (TCC ou artigo).\n"
-        "Localize trechos que representem os seguintes tipos de elemento: "
-        f"{tipos}.\n"
-        "Regras importantes:\n"
-        "- Use SEMPRE o texto original do documento no campo 'trecho', sem reescrever ou parafrasear.\n"
-        "- Um mesmo trecho pode conter mais de um elemento; nesse caso, gere um item para cada elemento.\n"
-        "- Indique a localização aproximada (ex.: 'início da introdução', 'parágrafo 2').\n"
-        "- Indique o grau de confiança como 'alta', 'media' ou 'baixa'.\n\n"
-        "Responda apenas com JSON:\n"
-        '{"elementos": [{"tipo": "...", "trecho": "...", "localizacao": "...", "confianca": "alta|media|baixa"}]}\n\n'
-        f"Introdução:\n{intro_text[:4000]}"
-    )
-
     try:
-        client = google_genai.Client(api_key=resolved_key)
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-        raw = getattr(response, "text", "") or ""
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            elementos: list[dict[str, Any]] = []
-            for item in data.get("elementos", []):
-                tipo = str(item.get("tipo", "")).strip().lower()
-                trecho = _normalize_spaces(str(item.get("trecho", "")))
-                if tipo not in INTRO_ELEMENT_LABELS or not trecho:
-                    continue
-                confianca = str(item.get("confianca", "media")).strip().lower()
-                if confianca not in {"alta", "media", "baixa"}:
-                    confianca = "media"
-                elementos.append({
-                    "tipo": tipo,
-                    "rotulo": INTRO_ELEMENT_LABELS[tipo],
-                    "trecho": trecho[:600],
-                    "localizacao": _normalize_spaces(str(item.get("localizacao", ""))) or "Introdução",
-                    "confianca": confianca,
-                    "usar": confianca != "baixa",
-                })
-            if elementos:
-                return elementos
+        elementos = _intro_elements_ai(intro_text, resolved_key)
+        return elementos or heuristic
     except Exception:
-        pass
-
-    return heuristic
+        return heuristic
 
 
 # ── Montagem das seções a partir do mapeamento confirmado ───────────────────────
@@ -1350,34 +1359,20 @@ _INTRO_ELEMENT_TO_SECTION = {
 }
 
 
-def assemble_sections_from_mapping(
-    segments: list[dict],
-    user_mapping: dict[str, str],
+def apply_intro_elements(
+    sections: dict[str, str],
     intro_elements: list[dict] | None = None,
-) -> dict[str, Any]:
-    """Build the analysis input from the user-confirmed segment mapping.
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Resolve the origin of Problem/Objectives and inject confirmed intro excerpts.
 
-    Returns the core sections dict, the Referencial Teórico text (context only),
-    and the origin of each strategic section ('secao_propria', 'introducao' or
-    'ausente'). Problem/objectives identified inside the Introduction are only used
-    when there is no dedicated section, and never counted more than once.
+    Shared by the automatic and the manual flows. A dedicated section always has
+    priority ('secao_propria'). When it is empty, the confirmed excerpts identified
+    inside the Introduction are used as an internal representation ('introducao') —
+    only the excerpts, never the whole Introduction, so nothing is double-counted.
+    When neither exists, the section stays 'ausente'. Returns (sections, origem).
     """
-    buckets: dict[str, list[str]] = {key: [] for key in MAPPABLE_SECTIONS}
-    for idx, seg in enumerate(segments):
-        role = user_mapping.get(str(idx)) or seg.get("sugerido")
-        if role not in MAPPABLE_SECTIONS:
-            continue
-        text = (seg.get("content") or "").strip()
-        if text:
-            buckets[role].append(text)
-
-    sections = {
-        key: _normalize_spaces("\n".join(buckets[key])) for key in SECTIONS_ORDER
-    }
-    referencial = _normalize_spaces("\n".join(buckets["referencial"]))
-
-    origem: dict[str, str] = {}
     confirmed = [e for e in (intro_elements or []) if e.get("usar")]
+    origem: dict[str, str] = {}
 
     for section_key, tipos in _INTRO_ELEMENT_TO_SECTION.items():
         if sections.get(section_key):
@@ -1392,6 +1387,35 @@ def assemble_sections_from_mapping(
             origem[section_key] = "introducao"
         else:
             origem[section_key] = "ausente"
+
+    return sections, origem
+
+
+def assemble_sections_from_mapping(
+    segments: list[dict],
+    user_mapping: dict[str, str],
+    intro_elements: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Build the analysis input from the user-confirmed segment mapping.
+
+    Returns the core sections dict, the Referencial Teórico text (context only),
+    and the origin of each strategic section ('secao_propria', 'introducao' or
+    'ausente').
+    """
+    buckets: dict[str, list[str]] = {key: [] for key in MAPPABLE_SECTIONS}
+    for idx, seg in enumerate(segments):
+        role = user_mapping.get(str(idx)) or seg.get("sugerido")
+        if role not in MAPPABLE_SECTIONS:
+            continue
+        text = (seg.get("content") or "").strip()
+        if text:
+            buckets[role].append(text)
+
+    sections = {
+        key: _normalize_spaces("\n".join(buckets[key])) for key in SECTIONS_ORDER
+    }
+    referencial = _normalize_spaces("\n".join(buckets["referencial"]))
+    sections, origem = apply_intro_elements(sections, intro_elements)
 
     return {
         "sections": sections,
